@@ -1,0 +1,143 @@
+ata:
+  name: airflow-k8s
+  namespace: airflow
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: airflow-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: airflow-k8s
+    namespace: airflow
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: airflow
+data:
+  ENV: local
+  # STORAGE_BUCKET: 
+  # [core]
+  AIRFLOW__CORE__EXECUTOR: KubernetesExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  # [kubernetes]
+  AIRFLOW__KUBERNETES__WORKER_CONTAINER_REPOSITORY: asia.gcr.io/project_name/ty
+  AIRFLOW__KUBERNETES__WORKER_CONTAINER_TAG: latest
+  AIRFLOW__KUBERNETES__WORKER_CONTAINER_IMAGE_PULL_POLICY: IfNotPresent
+  AIRFLOW__KUBERNETES__DELETE_WORKER_PODS: "True"
+  AIRFLOW__KUBERNETES__WORKER_PODS_CREATION_BATCH_SIZE: "5"
+  AIRFLOW__KUBERNETES__NAMESPACE: airflow
+  AIRFLOW__KUBERNETES__DAGS_IN_IMAGE: "True"
+  AIRFLOW__KUBERNETES__IN_CLUSTER: "True"
+  AIRFLOW__KUBERNETES__ENV_FROM_CONFIGMAP_REF: airflow-config
+  AIRFLOW__KUBERNETES__ENV_FROM_SECRET_REF: airflow-config
+  AIRFLOW__KUBERNETES__WORKER_SERVICE_ACCOUNT_NAME: airflow-k8s
+  AIRFLOW__KUBERNETES_LABELS__APP: 
+  # [webserver]
+  
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: airflow-config
+  namespace: airflow
+type: Opaque
+data:
+  AIRFLOW__CORE__FERNET_KEY:
+  AIRFLOW__CORE__SQL_ALCHEMY_CONN: 
+  # https://airflow.apache.org/docs/stable/howto/connection/index.html#creating-a-connection-with-environment-variables
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow
+  namespace: airflow
+spec:
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: webserver
+  selector:
+    app: airflow-webserver
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: airflow
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: airflow-webserver
+  template:
+    metadata:
+      labels:
+        app: airflow-webserver
+    spec:
+      serviceAccountName: airflow-k8s
+      # securityContext:
+      initContainers:
+        - name: "initdb"
+          image: asia.gcr.io/fast-gateway-316404/ty:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+            - secretRef:
+                name: airflow-config
+          command:
+            - "airflow"
+          args:
+            - "initdb"
+      containers:
+        - name: airflow-webserver
+          image: asia.gcr.io/fast-gateway-316404/ty:latest
+          ports:
+            - name: webserver
+              containerPort: 8080
+          command: ["airflow"]
+          args: ["webserver"]
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+            - secretRef:
+                name: airflow-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: airflow
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow-scheduler
+    spec:
+      serviceAccountName: airflow-k8s
+      containers:
+        - name: airflow-scheduler
+          image: asia.gcr.io/project_name/ty:latest
+          command: ["airflow"]
+          args: ["scheduler"]
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+            - secretRef:
+                name: airflow-config
